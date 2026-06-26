@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Food App - Order Tracker & Recommendations</title>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', sans-serif; background: #f5f5f5; padding: 24px; }
+    h1 { text-align: center; color: #e74c3c; margin-bottom: 24px; font-size: 22px; }
+    .tabs { display: flex; gap: 8px; max-width: 700px; margin: 0 auto 20px; }
+    .tab { flex: 1; padding: 10px; text-align: center; background: white; border-radius: 8px; cursor: pointer; font-size: 13px; border: 2px solid transparent; }
+    .tab.active { border-color: #e74c3c; color: #e74c3c; font-weight: bold; }
+    .section { display: none; max-width: 700px; margin: 0 auto; }
+    .section.active { display: block; }
+    .card { background: white; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+    h2 { color: #333; margin-bottom: 14px; font-size: 16px; }
+    input { width: 100%; padding: 9px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 13px; margin-bottom: 10px; }
+    button { background: #e74c3c; color: white; border: none; padding: 9px 18px; border-radius: 8px; cursor: pointer; font-size: 13px; margin-right: 8px; }
+    button:hover { opacity: 0.9; }
+    .result { margin-top: 12px; font-size: 13px; color: #27ae60; background: #f0fff4; padding: 10px; border-radius: 8px; }
+    .error { color: #e74c3c; background: #fff5f5; }
+    .status-bar { display: flex; justify-content: space-between; margin-top: 16px; }
+    .step { text-align: center; flex: 1; }
+    .step .dot { width: 28px; height: 28px; border-radius: 50%; background: #ddd; margin: 0 auto 5px; display: flex; align-items: center; justify-content: center; font-size: 12px; }
+    .step.active .dot { background: #2ecc71; }
+    .step.done .dot { background: #27ae60; }
+    .step p { font-size: 10px; color: #666; }
+    .log { margin-top: 12px; background: #f9f9f9; border-radius: 8px; padding: 10px; max-height: 120px; overflow-y: auto; font-size: 12px; color: #555; }
+    .rec-card { background: #fff; border: 1px solid #eee; border-radius: 10px; padding: 14px; margin-bottom: 10px; }
+    .rec-card h3 { font-size: 15px; color: #333; }
+    .rec-card .meta { font-size: 12px; color: #888; margin-top: 4px; }
+    .score { display: inline-block; background: #e74c3c; color: white; padding: 2px 10px; border-radius: 20px; font-size: 12px; float: right; }
+    .badge { display: inline-block; background: #3498db; color: white; padding: 2px 8px; border-radius: 20px; font-size: 11px; margin-right: 4px; }
+  </style>
+</head>
+<body>
+  <h1>🍕 Food App — Orders & Recommendations</h1>
+
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab('orders')">📦 Place & Track Order</div>
+    <div class="tab" onclick="switchTab('recs')">⭐ Recommendations</div>
+  </div>
+
+  <div class="section active" id="orders">
+    <div class="card">
+      <h2>📦 Place New Order</h2>
+      <input id="custName" placeholder="Customer Name"/>
+      <input id="custPhone" placeholder="Phone Number"/>
+      <input id="custAddress" placeholder="Delivery Address"/>
+      <input id="restaurantId" placeholder="Restaurant ID"/>
+      <input id="firebaseToken" placeholder="Firebase ID Token"/>
+      <button onclick="placeOrder()">Place Order</button>
+      <div id="orderResult"></div>
+    </div>
+    <div class="card">
+      <h2>📡 Track Order (Real-Time)</h2>
+      <input id="trackId" placeholder="Enter Order ID"/>
+      <button onclick="trackOrder()">Track</button>
+      <div id="tracker" style="display:none; margin-top:12px;">
+        <p style="font-size:13px;">Status: <strong id="currentStatus">Order Placed</strong></p>
+        <div class="status-bar" id="statusBar"></div>
+        <div class="log" id="statusLog"></div>
+      </div>
+    </div>          
+  </div>
+
+  <div class="section" id="recs">
+    <div class="card">
+      <h2>⭐ Get Personalized Recommendations</h2>
+      <input id="recUserId" placeholder="Firebase User UID"/>
+      <input id="recToken" placeholder="Firebase ID Token"/>
+      <button onclick="getRecommendations()">Get Recommendations</button>
+      <div id="recResult"></div>
+    </div>
+  </div>
+
+  <script>
+    const BASE = 'http://localhost:5000';
+    const socket = io(BASE);
+    const stages = ['Order Placed', 'Restaurant Accepted', 'Preparing Food', 'Out for Delivery', 'Delivered'];
+    const emojis = ['📋', '✅', '👨‍🍳', '🛵', '🎉'];
+
+    function switchTab(tab) {
+      document.querySelectorAll('.tab').forEach((t, i) => t.classList.toggle('active', ['orders','recs'][i] === tab));
+      document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+      document.getElementById(tab).classList.add('active');
+    }
+
+    async function placeOrder() {
+      const token = document.getElementById('firebaseToken').value;
+      const body = {
+        customerName: document.getElementById('custName').value,
+        customerPhone: document.getElementById('custPhone').value,
+        deliveryAddress: document.getElementById('custAddress').value,
+        restaurantId: document.getElementById('restaurantId').value,
+        items: [{ name: 'Burger', quantity: 2, price: 150 }]
+      };
+      const res = await fetch(`${BASE}/api/orders/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json();
+      const el = document.getElementById('orderResult');
+      if (data.success) {
+        el.className = 'result';
+        el.innerHTML = `✅ Order placed!<br><strong>Order ID: ${data.order._id}</strong>`;
+        document.getElementById('trackId').value = data.order._id;
+      } else {
+        el.className = 'result error';
+        el.textContent = '❌ ' + data.message;
+      }
+    }
+
+    function trackOrder() {
+      const orderId = document.getElementById('trackId').value.trim();
+      if (!orderId) return alert('Enter Order ID!');
+      socket.emit('join-order', orderId);
+      document.getElementById('tracker').style.display = 'block';
+      renderStatusBar('Order Placed');
+      addLog('🔗 Connected! Listening for updates...');
+      socket.on('order-status-update', (data) => {
+        if (data.orderId === orderId) {
+          document.getElementById('currentStatus').textContent = data.status;
+          renderStatusBar(data.status);
+          addLog(`🔔 Updated → ${data.status}`);
+        }
+      });
+    }
+
+    function renderStatusBar(current) {
+      const idx = stages.indexOf(current);
+      document.getElementById('statusBar').innerHTML = stages.map((s, i) => `
+        <div class="step ${i < idx ? 'done' : i === idx ? 'active' : ''}">
+          <div class="dot">${emojis[i]}</div>
+          <p>${s.split(' ').join('<br>')}</p>
+        </div>`).join('');
+    }
+
+    function addLog(msg) {
+      const log = document.getElementById('statusLog');
+      const p = document.createElement('p');
+      p.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      log.prepend(p);
+    }
+
+    async function getRecommendations() {
+      const uid = document.getElementById('recUserId').value.trim();
+      const token = document.getElementById('recToken').value.trim();
+      const res = await fetch(`${BASE}/api/restaurants/recommendations/${uid}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json();
+      const el = document.getElementById('recResult');
+      if (data.success) {
+        el.innerHTML = `
+          <p style="margin:12px 0 8px;font-size:13px;color:#555;">
+            Cuisines: ${data.userPreferences?.preferredCuisines?.join(', ') || 'None yet'} | 
+            Orders: ${data.userPreferences?.totalOrders || 0}
+          </p>
+          ${data.recommendations.map(r => `
+            <div class="rec-card">
+              <span class="score">${r.recommendationScore}/100</span>
+              <h3>${r.name}</h3>
+              <div class="meta">
+                ${r.cuisine?.map(c => `<span class="badge">${c}</span>`).join('')}
+                ⭐ ${r.rating} &nbsp; 📍 ${r.location || 'N/A'} &nbsp; ${r.isVisited ? '✅ Visited' : '🆕 New'}
+              </div>
+            </div>`).join('')}`;
+      } else {
+        el.innerHTML = `<div class="result error">❌ ${data.message}</div>`;
+      }
+    }
+  </script>
+</body>
+</html>
